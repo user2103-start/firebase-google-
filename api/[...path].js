@@ -9,7 +9,6 @@ const FILE_HOSTS = ["https://static.pw.live/"];
 
 const allowedCdn = u => CDN_HOSTS.some(h => u.startsWith(h));
 
-// Token helpers: base64url keeps the path free of "/" and "%" characters
 function toB64Url(s) {
   return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
@@ -27,10 +26,7 @@ const API_ROUTES = {
   "pdf": ["/api/GetPdf", ["BatchId", "SubjectId", "PdfId", "AttachmentId"]],
 };
 
-// Optional. Set in Vercel → Settings → Environment Variables.
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "";
-
-// Platform-issued credential, if they give one. Optional.
 const UPSTREAM_HEADER_NAME = process.env.UPSTREAM_HEADER_NAME || "";
 const UPSTREAM_HEADER_VALUE = process.env.UPSTREAM_HEADER_VALUE || "";
 
@@ -72,6 +68,49 @@ function passthrough(res, cors) {
   return new Response(res.body, { status: res.status, headers: h });
 }
 
+// Serves one file from a CDN directory. Nested HLS playlists get their URIs rewritten too.
+async function serveSegment(token, f, request, url, cors) {
+  let payload;
+  try {
+    payload = fromB64Url(token);
+  } catch {
+    return json({ error: "bad token" }, 400, cors);
+  }
+  const qi = payload.indexOf("?");
+  const cdnDir = qi === -1 ? payload : payload.slice(0, qi);
+  const sig = qi === -1 ? "" : payload.slice(qi);
+  if (!allowedCdn(cdnDir) || !f || f.includes("..")) {
+    return json({ error: "host not allowed" }, 403, cors);
+  }
+
+  const headers = upstreamHeaders();
+  const range = request.headers.get("Range");
+  if (range) headers.Range = range;
+
+  const res = await fetch(cdnDir + f + sig, { headers });
+
+  if (f.endsWith(".m3u8") && res.ok) {
+    const segUrl = line =>
+      `${url.origin}/api/seg?t=${token}&f=${encodeURIComponent(line)}`;
+    const text = (await res.text())
+      .split("\n")
+      .map(line => {
+        const l = line.trim();
+        if (l === "") return line;
+        if (l.startsWith("#")) {
+          return l.replace(/URI="([^"]+)"/g, (_, u) => `URI="${segUrl(u)}"`);
+        }
+        return segUrl(l);
+      })
+      .join("\n");
+    return new Response(text, {
+      headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" },
+    });
+  }
+
+  return passthrough(res, cors);
+}
+
 export default async function handler(request) {
   const cors = corsHeaders();
 
@@ -84,7 +123,6 @@ export default async function handler(request) {
   const p = url.searchParams;
 
   try {
-    // Today's schedule: POST { batchId }
     if (sub === "todays-schedule") {
       if (request.method !== "POST") return json({ error: "method not allowed" }, 405, cors);
 
@@ -104,7 +142,6 @@ export default async function handler(request) {
 
     if (request.method !== "GET") return json({ error: "method not allowed" }, 405, cors);
 
-    // JSON API routes (GET)
     if (API_ROUTES[sub]) {
       const [upPath, names] = API_ROUTES[sub];
       const params = {};
@@ -121,7 +158,6 @@ export default async function handler(request) {
       });
     }
 
-    // PDF file: allowed hosts only
     if (sub === "file") {
       const target = p.get("url");
       if (!target || !FILE_HOSTS.some(h => target.startsWith(h))) {
@@ -131,7 +167,7 @@ export default async function handler(request) {
       return passthrough(res, cors);
     }
 
-    // Manifest (DASH or HLS) with URIs rewritten through the proxy, or single-file passthrough
+    // Manifest (DASH or HLS) with URIs rewritten through the proxy
     if (sub === "play") {
       const target = p.get("url");
       if (!target || !allowedCdn(target)) return json({ error: "host not allowed" }, 403, cors);
@@ -146,10 +182,9 @@ export default async function handler(request) {
 
       const cdnDir = target.slice(0, target.lastIndexOf("/") + 1);
       const token = toB64Url(cdnDir + t.search);
-      const base = `${url.origin}/api/c/${token}/`;
 
       if (isMpd) {
-        // Insert our BaseURL right after <MPD ...> and drop any BaseURL that directly follows it
+        const base = `${url.origin}/api/c/${token}/`;
         const mpd = (await res.text()).replace(
           /(<MPD[^>]*>)\s*(<BaseURL>[^<]*<\/BaseURL>)?/,
           `$1\n  <BaseURL>${base}</BaseURL>`
@@ -159,11 +194,10 @@ export default async function handler(request) {
         });
       }
 
-      // HLS playlist: route every URI through the proxy
       const toProxy = uri =>
         uri.startsWith("http")
           ? `${url.origin}/api/play?url=${encodeURIComponent(uri)}`
-          : base + uri;
+          : `${url.origin}/api/seg?t=${token}&f=${encodeURIComponent(uri)}`;
 
       const playlist = (await res.text())
         .split("\n")
@@ -182,33 +216,20 @@ export default async function handler(request) {
       });
     }
 
-    // Segments: /api/c/<base64url token>/<relative path>
+    // Query-based segment route: /api/seg?t=<token>&f=<relative path>
+    if (sub === "seg") {
+      return serveSegment(p.get("t") || "", p.get("f") || "", request, url, cors);
+    }
+
+    // Path-based segment route for DASH BaseURL: /api/c/<token>/<relative path>
     if (sub.startsWith("c/")) {
       const m = sub.match(/^c\/([^/]+)\/(.+)$/);
       if (!m) return json({ error: "bad path" }, 400, cors);
-
-      let payload;
-      try {
-        payload = fromB64Url(m[1]);
-      } catch {
-        return json({ error: "bad token" }, 400, cors);
-      }
-
-      const qi = payload.indexOf("?");
-      const cdnDir = qi === -1 ? payload : payload.slice(0, qi);
-      const sig = qi === -1 ? "" : payload.slice(qi);
-      if (!allowedCdn(cdnDir)) return json({ error: "host not allowed" }, 403, cors);
-
-      const headers = upstreamHeaders();
-      const range = request.headers.get("Range");
-      if (range) headers.Range = range;
-
-      const res = await fetch(cdnDir + m[2] + sig, { headers });
-      return passthrough(res, cors);
+      return serveSegment(m[1], m[2], request, url, cors);
     }
 
     return json({ error: "not found" }, 404, cors);
   } catch (e) {
     return json({ error: e.message }, 502, cors);
   }
-  }
+}
