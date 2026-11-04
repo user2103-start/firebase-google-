@@ -140,9 +140,10 @@ export default async function handler(request) {
       const base = `${url.origin}/api/c/${token}/`;
 
       if (isMpd) {
+        // Insert our BaseURL right after <MPD ...> and drop any BaseURL that directly follows it
         const mpd = (await res.text()).replace(
-          /<BaseURL>[^<]*<\/BaseURL>/,
-          `<BaseURL>${base}</BaseURL>`
+          /(<MPD[^>]*>)\s*(<BaseURL>[^<]*<\/BaseURL>)?/,
+          `$1\n  <BaseURL>${base}</BaseURL>`
         );
         return new Response(mpd, {
           headers: { ...cors, "Content-Type": "application/dash+xml", "Cache-Control": "no-store" },
@@ -195,4 +196,4 @@ export default async function handler(request) {
   } catch (e) {
     return json({ error: e.message }, 502, cors);
   }
-        }
+}
