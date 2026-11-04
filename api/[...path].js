@@ -1,8 +1,13 @@
 export const config = { runtime: "edge" };
 
 const BASE = "https://thescholarverse.site";
-const CDN = "https://d1d34p8vz63oiq.cloudfront.net/";
+const CDN_HOSTS = [
+  "https://d1d34p8vz63oiq.cloudfront.net/",
+  "https://d1s3qm7un6hgrg.cloudfront.net/",
+];
 const FILE_HOSTS = ["https://static.pw.live/"];
+
+const allowedCdn = u => CDN_HOSTS.some(h => u.startsWith(h));
 
 const API_ROUTES = {
   "video-url": ["/api/get-video-url", ["batchId", "subjectId", "childId", "videoType"]],
@@ -14,7 +19,6 @@ const API_ROUTES = {
 };
 
 // Optional. Set in Vercel → Settings → Environment Variables.
-// Same-domain frontend does not need it.
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "";
 
 // Platform-issued credential, if they give one. Optional.
@@ -118,25 +122,53 @@ export default async function handler(request) {
       return passthrough(res, cors);
     }
 
-    // Manifest (BaseURL rewritten to /api/c/...) or single-file passthrough
+    // Manifest (DASH or HLS) with URIs rewritten through the proxy, or single-file passthrough
     if (sub === "play") {
       const target = p.get("url");
-      if (!target || !target.startsWith(CDN)) return json({ error: "host not allowed" }, 403, cors);
+      if (!target || !allowedCdn(target)) return json({ error: "host not allowed" }, 403, cors);
 
       const res = await fetch(target, { headers: upstreamHeaders() });
       if (!res.ok) return json({ error: `upstream ${res.status}` }, res.status, cors);
 
       const t = new URL(target);
-      if (!t.pathname.endsWith(".mpd")) return passthrough(res, cors);
+      const isMpd = t.pathname.endsWith(".mpd");
+      const isHls = t.pathname.endsWith(".m3u8");
+      if (!isMpd && !isHls) return passthrough(res, cors);
 
       const cdnDir = target.slice(0, target.lastIndexOf("/") + 1);
       const token = encodeURIComponent(cdnDir + t.search);
-      const mpd = (await res.text()).replace(
-        /<BaseURL>[^<]*<\/BaseURL>/,
-        `<BaseURL>${url.origin}/api/c/${token}/</BaseURL>`
-      );
-      return new Response(mpd, {
-        headers: { ...cors, "Content-Type": "application/dash+xml", "Cache-Control": "no-store" },
+      const base = `${url.origin}/api/c/${token}/`;
+
+      if (isMpd) {
+        const mpd = (await res.text()).replace(
+          /<BaseURL>[^<]*<\/BaseURL>/,
+          `<BaseURL>${base}</BaseURL>`
+        );
+        return new Response(mpd, {
+          headers: { ...cors, "Content-Type": "application/dash+xml", "Cache-Control": "no-store" },
+        });
+      }
+
+      // HLS playlist: route every URI through the proxy
+      const toProxy = uri =>
+        uri.startsWith("http")
+          ? `${url.origin}/api/play?url=${encodeURIComponent(uri)}`
+          : base + uri;
+
+      const playlist = (await res.text())
+        .split("\n")
+        .map(line => {
+          const l = line.trim();
+          if (l === "") return line;
+          if (l.startsWith("#")) {
+            return l.replace(/URI="([^"]+)"/g, (_, u) => `URI="${toProxy(u)}"`);
+          }
+          return toProxy(l);
+        })
+        .join("\n");
+
+      return new Response(playlist, {
+        headers: { ...cors, "Content-Type": "application/vnd.apple.mpegurl", "Cache-Control": "no-store" },
       });
     }
 
@@ -149,7 +181,7 @@ export default async function handler(request) {
       const qi = payload.indexOf("?");
       const cdnDir = qi === -1 ? payload : payload.slice(0, qi);
       const sig = qi === -1 ? "" : payload.slice(qi);
-      if (!cdnDir.startsWith(CDN)) return json({ error: "host not allowed" }, 403, cors);
+      if (!allowedCdn(cdnDir)) return json({ error: "host not allowed" }, 403, cors);
 
       const headers = upstreamHeaders();
       const range = request.headers.get("Range");
