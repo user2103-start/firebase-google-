@@ -9,6 +9,15 @@ const FILE_HOSTS = ["https://static.pw.live/"];
 
 const allowedCdn = u => CDN_HOSTS.some(h => u.startsWith(h));
 
+// Token helpers: base64url keeps the path free of "/" and "%" characters
+function toB64Url(s) {
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function fromB64Url(s) {
+  const b = s.replace(/-/g, "+").replace(/_/g, "/");
+  return atob(b + "=".repeat((4 - (b.length % 4)) % 4));
+}
+
 const API_ROUTES = {
   "video-url": ["/api/get-video-url", ["batchId", "subjectId", "childId", "videoType"]],
   "video-keys": ["/api/get-video-with-keys", ["batchId", "subjectId", "childId", "videoType"]],
@@ -136,7 +145,7 @@ export default async function handler(request) {
       if (!isMpd && !isHls) return passthrough(res, cors);
 
       const cdnDir = target.slice(0, target.lastIndexOf("/") + 1);
-      const token = encodeURIComponent(cdnDir + t.search);
+      const token = toB64Url(cdnDir + t.search);
       const base = `${url.origin}/api/c/${token}/`;
 
       if (isMpd) {
@@ -173,12 +182,18 @@ export default async function handler(request) {
       });
     }
 
-    // Segments: /api/c/<token>/<relative path>
+    // Segments: /api/c/<base64url token>/<relative path>
     if (sub.startsWith("c/")) {
       const m = sub.match(/^c\/([^/]+)\/(.+)$/);
       if (!m) return json({ error: "bad path" }, 400, cors);
 
-      const payload = decodeURIComponent(m[1]);
+      let payload;
+      try {
+        payload = fromB64Url(m[1]);
+      } catch {
+        return json({ error: "bad token" }, 400, cors);
+      }
+
       const qi = payload.indexOf("?");
       const cdnDir = qi === -1 ? payload : payload.slice(0, qi);
       const sig = qi === -1 ? "" : payload.slice(qi);
@@ -196,4 +211,4 @@ export default async function handler(request) {
   } catch (e) {
     return json({ error: e.message }, 502, cors);
   }
-}
+  }
