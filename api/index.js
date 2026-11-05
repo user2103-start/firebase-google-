@@ -8,11 +8,22 @@ app.use(express.json());
 
 const TARGET_BASE = 'https://thescholarverse.site';
 
+// Helper function to forward incoming headers, cookies, and spoof Referer/Origin
+const getClientHeaders = (req) => {
+    return {
+        'Cookie': req.headers.cookie || req.headers['x-cookie'] || '',
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Referer': `${TARGET_BASE}/`,
+        'Origin': TARGET_BASE
+    };
+};
+
 // 1. Subject Info Proxy
 app.get('/api/subject-info', async (req, res) => {
     try {
         const response = await axios.get(`${TARGET_BASE}/api/SubjectInfo`, {
-            params: req.query
+            params: req.query,
+            headers: getClientHeaders(req)
         });
         res.json(response.data);
     } catch (error) {
@@ -27,9 +38,10 @@ app.get('/api/topic-info', async (req, res) => {
         let allData = [];
         let fetching = true;
 
-        while (fetching && page <= 10) { // Safety limit of 10 pages
+        while (fetching && page <= 10) {
             const response = await axios.get(`${TARGET_BASE}/api/TopicInfo`, {
-                params: { ...req.query, page }
+                params: { ...req.query, page },
+                headers: getClientHeaders(req)
             });
             
             const result = response.data;
@@ -54,7 +66,8 @@ app.get('/api/topic-info', async (req, res) => {
 app.get('/api/get-video-url', async (req, res) => {
     try {
         const response = await axios.get(`${TARGET_BASE}/api/get-video-url`, {
-            params: req.query
+            params: req.query,
+            headers: getClientHeaders(req)
         });
         res.json(response.data);
     } catch (error) {
@@ -66,7 +79,8 @@ app.get('/api/get-video-url', async (req, res) => {
 app.get('/api/get-video-with-keys', async (req, res) => {
     try {
         const response = await axios.get(`${TARGET_BASE}/api/get-video-with-keys`, {
-            params: req.query
+            params: req.query,
+            headers: getClientHeaders(req)
         });
         res.json(response.data);
     } catch (error) {
@@ -74,11 +88,12 @@ app.get('/api/get-video-with-keys', async (req, res) => {
     }
 });
 
-// 5. Play / Manifest Proxy (handles DASH XML streams properly)
+// 5. Play / Manifest Proxy
 app.get('/api/play', async (req, res) => {
     try {
         const response = await axios.get(`${TARGET_BASE}/api/play`, {
             params: req.query,
+            headers: getClientHeaders(req),
             responseType: 'arraybuffer'
         });
         
@@ -94,7 +109,8 @@ app.get('/api/play', async (req, res) => {
 app.get('/api/get-pdf', async (req, res) => {
     try {
         const response = await axios.get(`${TARGET_BASE}/api/GetPdf`, {
-            params: req.query
+            params: req.query,
+            headers: getClientHeaders(req)
         });
         res.json(response.data);
     } catch (error) {
@@ -102,10 +118,12 @@ app.get('/api/get-pdf', async (req, res) => {
     }
 });
 
-// 7. Todays Schedule Proxy (POST Request)
+// 7. Todays Schedule Proxy
 app.post('/api/todays-schedule', async (req, res) => {
     try {
-        const response = await axios.post(`${TARGET_BASE}/api/todays-schedule`, req.body);
+        const response = await axios.post(`${TARGET_BASE}/api/todays-schedule`, req.body, {
+            headers: getClientHeaders(req)
+        });
         res.json(response.data);
     } catch (error) {
         res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
@@ -117,6 +135,7 @@ app.get('/api/live', async (req, res) => {
     try {
         const response = await axios.get(`${TARGET_BASE}/live`, {
             params: req.query,
+            headers: getClientHeaders(req),
             responseType: 'text'
         });
         res.send(response.data);
@@ -125,6 +144,4 @@ app.get('/api/live', async (req, res) => {
     }
 });
 
-// Vercel ke liye export karna zaroori hai
 module.exports = app;
-  
