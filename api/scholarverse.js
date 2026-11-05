@@ -1,158 +1,130 @@
-export const config = { runtime: "edge" };
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
 
-const BASE = "https://thescholarverse.site";
-const CDN = "https://d1d34p8vz63oiq.cloudfront.net/";
-const FILE_HOSTS = ["https://static.pw.live/"];
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-const API_ROUTES = {
-  "video-url": ["/api/get-video-url", ["batchId", "subjectId", "childId", "videoType"]],
-  "video-keys": ["/api/get-video-with-keys", ["batchId", "subjectId", "childId"]],
-  "batch-info": ["/api/BatchInfo", ["BatchId", "Type"]],
-  "subject-info": ["/api/SubjectInfo", ["BatchId", "SubjectId", "page"]],
-  "topic-info": ["/api/TopicInfo", ["BatchId", "SubjectId", "TopicId", "ContentType", "page"]],
-  "pdf": ["/api/GetPdf", ["BatchId", "SubjectId", "PdfId", "AttachmentId"]],
-};
+const TARGET_BASE = 'https://thescholarverse.site';
 
-// Set in Vercel project settings: your frontend's origin, e.g. https://my-app.vercel.app
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "";
-
-function corsHeaders() {
-  return {
-    "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Range, Content-Type",
-    "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
-    Vary: "Origin",
-  };
-}
-
-// Platform-issued credential, if they give one. Set both env vars in Vercel.
-function upstreamHeaders(extra = {}) {
-  const h = { "User-Agent": "scholarverse-proxy", Accept: "*/*", ...extra };
-  if (process.env.UPSTREAM_HEADER_NAME && process.env.UPSTREAM_HEADER_VALUE) {
-    h[process.env.UPSTREAM_HEADER_NAME] = process.env.UPSTREAM_HEADER_VALUE;
-  }
-  return h;
-}
-
-function json(data, status, cors) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" },
-  });
-}
-
-function passthrough(res, cors) {
-  const h = {
-    ...cors,
-    "Content-Type": res.headers.get("Content-Type") || "application/octet-stream",
-    "Cache-Control": "no-store",
-    "Accept-Ranges": "bytes",
-  };
-  const cr = res.headers.get("Content-Range");
-  if (cr) h["Content-Range"] = cr;
-  return new Response(res.body, { status: res.status, headers: h });
-}
-
-export default async function handler(request) {
-  const cors = corsHeaders();
-  if (request.method === "OPTIONS") return new Response(null, { headers: cors });
-
-  const url = new URL(request.url);
-  const sub = url.pathname.replace(/^\/api\//, "");
-  const p = url.searchParams;
-
-  try {
-    // Today's schedule: POST with { batchId }
-    if (sub === "todays-schedule") {
-      if (request.method !== "POST") return json({ error: "method not allowed" }, 405, cors);
-
-      const body = await request.json().catch(() => null);
-      if (!body?.batchId) return json({ error: "batchId missing" }, 400, cors);
-
-      const res = await fetch(`${BASE}/api/todays-schedule`, {
-        method: "POST",
-        headers: upstreamHeaders({ "Content-Type": "application/json", Accept: "application/json" }),
-        body: JSON.stringify({ batchId: body.batchId }),
-      });
-      return new Response(await res.text(), {
-        status: res.status,
-        headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" },
-      });
+// 1. Subject Info Proxy
+app.get('/api/subject-info', async (req, res) => {
+    try {
+        const response = await axios.get(`${TARGET_BASE}/api/SubjectInfo`, {
+            params: req.query
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
     }
+});
 
-    if (request.method !== "GET") return json({ error: "method not allowed" }, 405, cors);
+// 2. Topic Info Proxy (auto-fetches all pages and merges them together)
+app.get('/api/topic-info', async (req, res) => {
+    try {
+        let page = 1;
+        let allData = [];
+        let fetching = true;
 
-    // JSON API routes (GET)
-    if (API_ROUTES[sub]) {
-      const [upPath, names] = API_ROUTES[sub];
-      const params = {};
-      for (const n of names) {
-        const v = p.get(n);
-        if (v !== null) params[n] = v;
-      }
-      const res = await fetch(`${BASE}${upPath}?${new URLSearchParams(params)}`, {
-        headers: upstreamHeaders({ Accept: "application/json" }),
-      });
-      return new Response(await res.text(), {
-        status: res.status,
-        headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" },
-      });
+        while (fetching && page <= 10) { // Safety limit of 10 pages
+            const response = await axios.get(`${TARGET_BASE}/api/TopicInfo`, {
+                params: { ...req.query, page }
+            });
+            
+            const result = response.data;
+            if (result && result.success && result.data && Array.isArray(result.data) && result.data.length > 0) {
+                allData = allData.concat(result.data);
+                page++;
+            } else {
+                if (page === 1) {
+                    allData = result.data || [];
+                }
+                fetching = false;
+            }
+        }
+
+        res.json({ success: true, data: allData });
+    } catch (error) {
+        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
     }
+});
 
-    // PDF file, allowed hosts only
-    if (sub === "file") {
-      const target = p.get("url");
-      if (!target || !FILE_HOSTS.some(h => target.startsWith(h))) {
-        return json({ error: "host not allowed" }, 403, cors);
-      }
-      const res = await fetch(target, { headers: upstreamHeaders() });
-      return passthrough(res, cors);
+// 3. Get Video URL Proxy
+app.get('/api/get-video-url', async (req, res) => {
+    try {
+        const response = await axios.get(`${TARGET_BASE}/api/get-video-url`, {
+            params: req.query
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
     }
+});
 
-    // Manifest (rewrite BaseURL) or single-file passthrough
-    if (sub === "play") {
-      const target = p.get("url");
-      if (!target || !target.startsWith(CDN)) return json({ error: "host not allowed" }, 403, cors);
-
-      const res = await fetch(target, { headers: upstreamHeaders() });
-      if (!res.ok) return json({ error: `upstream ${res.status}` }, res.status, cors);
-
-      const t = new URL(target);
-      if (!t.pathname.endsWith(".mpd")) return passthrough(res, cors);
-
-      const cdnDir = target.slice(0, target.lastIndexOf("/") + 1);
-      const token = encodeURIComponent(cdnDir + t.search);
-      const mpd = (await res.text()).replace(
-        /<BaseURL>[^<]*<\/BaseURL>/,
-        `<BaseURL>${url.origin}/api/c/${token}/</BaseURL>`
-      );
-      return new Response(mpd, {
-        headers: { ...cors, "Content-Type": "application/dash+xml", "Cache-Control": "no-store" },
-      });
+// 4. Get Video with Keys Proxy
+app.get('/api/get-video-with-keys', async (req, res) => {
+    try {
+        const response = await axios.get(`${TARGET_BASE}/api/get-video-with-keys`, {
+            params: req.query
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
     }
+});
 
-    // Segments: /api/c/<token>/<relative path>
-    if (sub.startsWith("c/")) {
-      const m = sub.match(/^c\/([^/]+)\/(.+)$/);
-      if (!m) return json({ error: "bad path" }, 400, cors);
-
-      const payload = decodeURIComponent(m[1]);
-      const qi = payload.indexOf("?");
-      const cdnDir = qi === -1 ? payload : payload.slice(0, qi);
-      const sig = qi === -1 ? "" : payload.slice(qi);
-      if (!cdnDir.startsWith(CDN)) return json({ error: "host not allowed" }, 403, cors);
-
-      const headers = upstreamHeaders();
-      const range = request.headers.get("Range");
-      if (range) headers.Range = range;
-
-      const res = await fetch(cdnDir + m[2] + sig, { headers });
-      return passthrough(res, cors);
+// 5. Play / Manifest Proxy (handles DASH XML streams properly)
+app.get('/api/play', async (req, res) => {
+    try {
+        const response = await axios.get(`${TARGET_BASE}/api/play`, {
+            params: req.query,
+            responseType: 'arraybuffer'
+        });
+        
+        res.set('Content-Type', response.headers['content-type'] || 'application/dash+xml');
+        res.set('Access-Control-Allow-Origin', '*');
+        res.send(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).send(error.message);
     }
+});
 
-    return json({ error: "not found" }, 404, cors);
-  } catch (e) {
-    return json({ error: e.message }, 502, cors);
-  }
-}
+// 6. Get PDF Proxy
+app.get('/api/get-pdf', async (req, res) => {
+    try {
+        const response = await axios.get(`${TARGET_BASE}/api/GetPdf`, {
+            params: req.query
+        });
+        res.json(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
+    }
+});
+
+// 7. Todays Schedule Proxy (POST Request)
+app.post('/api/todays-schedule', async (req, res) => {
+    try {
+        const response = await axios.post(`${TARGET_BASE}/api/todays-schedule`, req.body);
+        res.json(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
+    }
+});
+
+// 8. Live Video Page Proxy
+app.get('/api/live', async (req, res) => {
+    try {
+        const response = await axios.get(`${TARGET_BASE}/live`, {
+            params: req.query,
+            responseType: 'text'
+        });
+        res.send(response.data);
+    } catch (error) {
+        res.status(error.response?.status || 500).send(error.message);
+    }
+});
+
+// Vercel ke liye export karna zaroori hai
+module.exports = app;
+  
