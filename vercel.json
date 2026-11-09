@@ -1,5 +1,0 @@
-{
-  "functions": {
-    "api/scholarverse.js": { "memory": 512, "maxDuration": 30 }
-  }
-}
