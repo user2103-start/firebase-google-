@@ -1,5 +1,5 @@
 {
   "functions": {
-    "adds/proxy.js": { "memory": 512, "maxDuration": 30 }
+    "api/scholarverse.js": { "memory": 512, "maxDuration": 30 }
   }
 }
