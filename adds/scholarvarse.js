@@ -44,6 +44,12 @@ export default async function handler(req, res) {
   let method = "GET";
   let body;
 
+  // Batch list
+  if (route === "batches") {
+    // No parameters required
+  }
+
+  // Single batch
   if (route === "batch") {
     if (!p.id) {
       return res.status(400).json({
@@ -51,9 +57,11 @@ export default async function handler(req, res) {
         error: "Missing id"
       });
     }
+
     params.set("id", p.id);
   }
 
+  // Course overview
   if (route === "overview") {
     if (!p.course_id) {
       return res.status(400).json({
@@ -61,10 +69,12 @@ export default async function handler(req, res) {
         error: "Missing course_id"
       });
     }
+
     params.set("course_id", p.course_id);
     params.set("type", "overview");
   }
 
+  // All folder content
   if (route === "content") {
     if (!p.course_id) {
       return res.status(400).json({
@@ -96,6 +106,7 @@ export default async function handler(req, res) {
     };
   }
 
+  // Single video / PDF details
   if (route === "single-content") {
     if (!p.course_id || !p.content_id) {
       return res.status(400).json({
