@@ -1,5 +1,5 @@
 const UPSTREAM = (
-  process.env.UPSTREAM_URL || "https://thescholarverse.site"
+  process.env.UPSTREAM_URL || "https://thescholarverse.in"
 ).replace(/\/+$/, "");
 
 const ROUTES = {
