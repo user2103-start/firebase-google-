@@ -1,147 +1,125 @@
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
+const UPSTREAM = (
+  process.env.UPSTREAM_URL || "https://thescholarverse.in"
+).replace(/\/+$/, "");
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-const TARGET_BASE = 'https://thescholarverse.site';
-
-// Helper function to forward incoming headers, cookies, and spoof Referer/Origin
-const getClientHeaders = (req) => {
-    return {
-        'Cookie': req.headers.cookie || req.headers['x-cookie'] || '',
-        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Referer': `${TARGET_BASE}/`,
-        'Origin': TARGET_BASE
-    };
+const ROUTES = {
+  batches: "/api/mj/batches",
+  batch: "/api/mj/batches",
+  overview: "/api/mj/details",
+  content: "/api/mj/all-content",
+  "single-content": "/api/mj/details"
 };
 
-// 1. Subject Info Proxy
-app.get('/api/subject-info', async (req, res) => {
-    try {
-        const response = await axios.get(`${TARGET_BASE}/api/SubjectInfo`, {
-            params: req.query,
-            headers: getClientHeaders(req)
-        });
-        res.json(response.data);
-    } catch (error) {
-        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
+const UA =
+  "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+
+const fail = (res, code, error) =>
+  res.status(code).json({ success: false, error });
+
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "GET") return fail(res, 405, "Only GET requests are allowed");
+
+  const p = req.query;
+  const route = p.route;
+  const endpoint = ROUTES[route];
+
+  if (!endpoint) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid route",
+      available_routes: Object.keys(ROUTES)
+    });
+  }
+
+  const params = new URLSearchParams();
+  let method = "GET";
+  let body;
+
+  if (route === "batch") {
+    if (!p.id) return fail(res, 400, "Missing id");
+    params.set("id", p.id);
+  }
+
+  if (route === "overview") {
+    if (!p.course_id) return fail(res, 400, "Missing course_id");
+    params.set("course_id", p.course_id);
+    params.set("type", "overview");
+  }
+
+  if (route === "content") {
+    if (!p.course_id) return fail(res, 400, "Missing course_id");
+
+    const limit = Number(p.limit || 100);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return fail(res, 400, "Limit must be between 1 and 100");
     }
-});
 
-// 2. Topic Info Proxy (auto-fetches all pages and merges them together)
-app.get('/api/topic-info', async (req, res) => {
-    try {
-        let page = 1;
-        let allData = [];
-        let fetching = true;
+    method = "POST";
+    body = {
+      course_id: p.course_id,
+      folder_id: p.folder_id || "0",
+      tab_id: p.tab_id || "226",
+      tab_type: p.tab_type || "content",
+      page: p.page || "1",
+      limit: String(limit),
+      keyword: p.keyword || "",
+      parent_course_id: p.parent_course_id || "0"
+    };
+  }
 
-        while (fetching && page <= 10) {
-            const response = await axios.get(`${TARGET_BASE}/api/TopicInfo`, {
-                params: { ...req.query, page },
-                headers: getClientHeaders(req)
-            });
-            
-            const result = response.data;
-            if (result && result.success && result.data && Array.isArray(result.data) && result.data.length > 0) {
-                allData = allData.concat(result.data);
-                page++;
-            } else {
-                if (page === 1) {
-                    allData = result.data || [];
-                }
-                fetching = false;
-            }
-        }
-
-        res.json({ success: true, data: allData });
-    } catch (error) {
-        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
+  if (route === "single-content") {
+    if (!p.course_id || !p.content_id) {
+      return fail(res, 400, "Missing course_id or content_id");
     }
-});
+    params.set("type", "single_content");
+    params.set("course_id", p.course_id);
+    params.set("folder_id", p.folder_id || "0");
+    params.set("content_id", p.content_id);
+  }
 
-// 3. Get Video URL Proxy
-app.get('/api/get-video-url', async (req, res) => {
-    try {
-        const response = await axios.get(`${TARGET_BASE}/api/get-video-url`, {
-            params: req.query,
-            headers: getClientHeaders(req)
-        });
-        res.json(response.data);
-    } catch (error) {
-        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
+  const qs = params.toString();
+  const url = UPSTREAM + endpoint + (qs ? "?" + qs : "");
+
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        Accept: "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        Origin: UPSTREAM,
+        Referer: UPSTREAM + "/",
+        "User-Agent": UA,
+        ...(method === "POST" ? { "Content-Type": "application/json" } : {})
+      },
+      ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(20000)
+    });
+
+    const ct = response.headers.get("content-type") || "";
+    const data = await response.text();
+
+    res.setHeader("Cache-Control", "no-store");
+
+    // HTML aaya (challenge / block page) to clean JSON error + debug info
+    if (!ct.includes("json")) {
+      return res.status(502).json({
+        success: false,
+        error: "Upstream did not return JSON",
+        upstream_status: response.status,
+        upstream_content_type: ct,
+        preview: data.slice(0, 300)
+      });
     }
-});
 
-// 4. Get Video with Keys Proxy
-app.get('/api/get-video-with-keys', async (req, res) => {
-    try {
-        const response = await axios.get(`${TARGET_BASE}/api/get-video-with-keys`, {
-            params: req.query,
-            headers: getClientHeaders(req)
-        });
-        res.json(response.data);
-    } catch (error) {
-        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
-    }
-});
-
-// 5. Play / Manifest Proxy
-app.get('/api/play', async (req, res) => {
-    try {
-        const response = await axios.get(`${TARGET_BASE}/api/play`, {
-            params: req.query,
-            headers: getClientHeaders(req),
-            responseType: 'arraybuffer'
-        });
-        
-        res.set('Content-Type', response.headers['content-type'] || 'application/dash+xml');
-        res.set('Access-Control-Allow-Origin', '*');
-        res.send(response.data);
-    } catch (error) {
-        res.status(error.response?.status || 500).send(error.message);
-    }
-});
-
-// 6. Get PDF Proxy
-app.get('/api/get-pdf', async (req, res) => {
-    try {
-        const response = await axios.get(`${TARGET_BASE}/api/GetPdf`, {
-            params: req.query,
-            headers: getClientHeaders(req)
-        });
-        res.json(response.data);
-    } catch (error) {
-        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
-    }
-});
-
-// 7. Todays Schedule Proxy
-app.post('/api/todays-schedule', async (req, res) => {
-    try {
-        const response = await axios.post(`${TARGET_BASE}/api/todays-schedule`, req.body, {
-            headers: getClientHeaders(req)
-        });
-        res.json(response.data);
-    } catch (error) {
-        res.status(error.response?.status || 500).json(error.response?.data || { error: error.message });
-    }
-});
-
-// 8. Live Video Page Proxy
-app.get('/api/live', async (req, res) => {
-    try {
-        const response = await axios.get(`${TARGET_BASE}/live`, {
-            params: req.query,
-            headers: getClientHeaders(req),
-            responseType: 'text'
-        });
-        res.send(response.data);
-    } catch (error) {
-        res.status(error.response?.status || 500).send(error.message);
-    }
-});
-
-module.exports = app;
+    res.setHeader("Content-Type", ct);
+    return res.status(response.status).send(data);
+  } catch (error) {
+    console.error("Scholarverse proxy:", error);
+    return fail(res, 502, "Upstream request failed");
+  }
+}
