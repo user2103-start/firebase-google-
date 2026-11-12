@@ -1,6 +1,14 @@
+
 const UPSTREAM = (
   process.env.UPSTREAM_URL || "https://thescholarverse.in"
 ).replace(/\/+$/, "");
+
+const ORIGIN = (
+  process.env.UPSTREAM_ORIGIN || "https://thescholarverse.in"
+).replace(/\/+$/, "");
+
+const REFERER =
+  process.env.UPSTREAM_REFERER || `${ORIGIN}/`;
 
 const ROUTES = {
   batches: "/api/mj/batches",
@@ -14,7 +22,10 @@ export default async function handler(req, res) {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type"
+  );
 
   if (req.method === "OPTIONS") {
     return res.status(204).end();
@@ -44,6 +55,12 @@ export default async function handler(req, res) {
   let method = "GET";
   let body;
 
+  // Batch list
+  if (route === "batches") {
+    // No parameters required
+  }
+
+  // Single batch
   if (route === "batch") {
     if (!p.id) {
       return res.status(400).json({
@@ -51,9 +68,11 @@ export default async function handler(req, res) {
         error: "Missing id"
       });
     }
+
     params.set("id", p.id);
   }
 
+  // Course overview
   if (route === "overview") {
     if (!p.course_id) {
       return res.status(400).json({
@@ -61,10 +80,12 @@ export default async function handler(req, res) {
         error: "Missing course_id"
       });
     }
+
     params.set("course_id", p.course_id);
     params.set("type", "overview");
   }
 
+  // All folder content
   if (route === "content") {
     if (!p.course_id) {
       return res.status(400).json({
@@ -96,6 +117,7 @@ export default async function handler(req, res) {
     };
   }
 
+  // Single video / PDF details
   if (route === "single-content") {
     if (!p.course_id || !p.content_id) {
       return res.status(400).json({
@@ -116,15 +138,27 @@ export default async function handler(req, res) {
   try {
     const response = await fetch(url, {
       method,
+
       headers: {
-        Accept: "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent":
+          "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+
+        "Origin": ORIGIN,
+        "Referer": REFERER,
+
         ...(method === "POST"
-          ? { "Content-Type": "application/json" }
+          ? {
+              "Content-Type": "application/json"
+            }
           : {})
       },
+
       ...(method === "POST"
         ? { body: JSON.stringify(body) }
         : {}),
+
       signal: AbortSignal.timeout(20000)
     });
 
@@ -148,4 +182,5 @@ export default async function handler(req, res) {
       error: "Upstream request failed"
     });
   }
-        }
+          }
+      
