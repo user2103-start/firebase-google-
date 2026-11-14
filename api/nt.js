@@ -31,7 +31,7 @@ export default async function handler(req, res) {
   const qs = sp.toString();
   const url = ROUTES[type](id) + (qs ? '?' + qs : '');
 
-  let ref = type === 'live' ? 'https://selectionway.studybeepro.site/' : 'https://studybeepro.site/';
+  let ref = type === 'live' ? 'none' : 'https://studybeepro.site/';
   if (refOverride) ref = refOverride;
 
   try {
