@@ -1,3 +1,5 @@
+export const config = { maxDuration: 30 };
+
 const H = 'https://nt.studybeepro.site';
 const W = 'https://fk.khatikgaurav38.workers.dev/api/nt';
 const L = 'https://selectionway.studybeepro.site/livex.php';
@@ -33,13 +35,19 @@ export default async function handler(req, res) {
       Origin: 'https://studybeepro.site',
       'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0',
       Accept: '*/*',
+      'Accept-Encoding': 'identity',
     };
     if (req.headers.range) headers.Range = req.headers.range;
 
-    const r = await fetch(url, { method: req.method === 'POST' ? 'POST' : 'GET', headers, redirect: 'follow' });
+    const r = await fetch(url, {
+      method: req.method === 'POST' ? 'POST' : 'GET',
+      headers,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(25000),
+    });
 
     res.status(r.status);
-    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition']) {
+    for (const h of ['content-type', 'content-range', 'accept-ranges', 'content-disposition']) {
       const v = r.headers.get(h);
       if (v) res.setHeader(h, v);
     }
@@ -49,6 +57,11 @@ export default async function handler(req, res) {
     const { Readable } = await import('node:stream');
     Readable.fromWeb(r.body).pipe(res);
   } catch (e) {
-    res.status(502).json({ error: 'upstream failed', detail: String(e) });
+    const timeout = e.name === 'TimeoutError' || e.name === 'AbortError';
+    res.status(timeout ? 504 : 502).json({
+      error: timeout ? 'upstream timeout' : 'upstream failed',
+      detail: String(e),
+      url,
+    });
   }
 }
