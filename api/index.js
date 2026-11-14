@@ -1,125 +1,79 @@
-const UPSTREAM = (
-  process.env.UPSTREAM_URL || "https://thescholarverse.in"
-).replace(/\/+$/, "");
-
-const ROUTES = {
-  batches: "/api/mj/batches",
-  batch: "/api/mj/batches",
-  overview: "/api/mj/details",
-  content: "/api/mj/all-content",
-  "single-content": "/api/mj/details"
+const UPSTREAMS = {
+  batches: "https://nt.studybeepro.site/batches.json",
+  worker: "https://fk.khatikgaurav38.workers.dev/api/nt",
+  media: "https://nt.studybeepro.site"
 };
 
-const UA =
-  "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
-
-const fail = (res, code, error) =>
-  res.status(code).json({ success: false, error });
+const HEADERS = {
+  Origin: "https://studybeepro.site",
+  Referer: "https://studybeepro.site/",
+  Accept: "*/*"
+};
 
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "GET") return fail(res, 405, "Only GET requests are allowed");
-
-  const p = req.query;
-  const route = p.route;
-  const endpoint = ROUTES[route];
-
-  if (!endpoint) {
-    return res.status(400).json({
-      success: false,
-      error: "Invalid route",
-      available_routes: Object.keys(ROUTES)
-    });
-  }
-
-  const params = new URLSearchParams();
-  let method = "GET";
-  let body;
-
-  if (route === "batch") {
-    if (!p.id) return fail(res, 400, "Missing id");
-    params.set("id", p.id);
-  }
-
-  if (route === "overview") {
-    if (!p.course_id) return fail(res, 400, "Missing course_id");
-    params.set("course_id", p.course_id);
-    params.set("type", "overview");
-  }
-
-  if (route === "content") {
-    if (!p.course_id) return fail(res, 400, "Missing course_id");
-
-    const limit = Number(p.limit || 100);
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      return fail(res, 400, "Limit must be between 1 and 100");
-    }
-
-    method = "POST";
-    body = {
-      course_id: p.course_id,
-      folder_id: p.folder_id || "0",
-      tab_id: p.tab_id || "226",
-      tab_type: p.tab_type || "content",
-      page: p.page || "1",
-      limit: String(limit),
-      keyword: p.keyword || "",
-      parent_course_id: p.parent_course_id || "0"
-    };
-  }
-
-  if (route === "single-content") {
-    if (!p.course_id || !p.content_id) {
-      return fail(res, 400, "Missing course_id or content_id");
-    }
-    params.set("type", "single_content");
-    params.set("course_id", p.course_id);
-    params.set("folder_id", p.folder_id || "0");
-    params.set("content_id", p.content_id);
-  }
-
-  const qs = params.toString();
-  const url = UPSTREAM + endpoint + (qs ? "?" + qs : "");
-
   try {
-    const response = await fetch(url, {
-      method,
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        Origin: UPSTREAM,
-        Referer: UPSTREAM + "/",
-        "User-Agent": UA,
-        ...(method === "POST" ? { "Content-Type": "application/json" } : {})
-      },
-      ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(20000)
-    });
+    const path = (req.query.path || []).join("/");
+    const params = new URLSearchParams(req.query);
 
-    const ct = response.headers.get("content-type") || "";
-    const data = await response.text();
+    let target;
 
-    res.setHeader("Cache-Control", "no-store");
+    if (path === "batches") {
+      target = UPSTREAMS.batches;
+    } else if (path === "overview") {
+      target = `${UPSTREAMS.worker}?overview=${params.get("id") || "176"}`;
+    } else if (path === "content") {
+      const id = params.get("id") || "176";
+      const folder = params.get("folder") || "0";
+      target = `${UPSTREAMS.worker}?content=${id}&folder=${folder}`;
+    } else if (path.startsWith("video/")) {
+      const videoId = path.slice(6);
 
-    // HTML aaya (challenge / block page) to clean JSON error + debug info
-    if (!ct.includes("json")) {
-      return res.status(502).json({
-        success: false,
-        error: "Upstream did not return JSON",
-        upstream_status: response.status,
-        upstream_content_type: ct,
-        preview: data.slice(0, 300)
-      });
+      if (!/^[a-zA-Z0-9_-]+$/.test(videoId)) {
+        return res.status(400).json({ error: "Invalid video ID" });
+      }
+
+      target = `${UPSTREAMS.media}/vc/${videoId}`;
+    } else if (path === "pdf") {
+      const courseId = params.get("course_id");
+      const contentId = params.get("content_id");
+
+      if (!courseId || !contentId) {
+        return res.status(400).json({
+          error: "course_id and content_id required"
+        });
+      }
+
+      target = `${UPSTREAMS.media}/vc/media?${new URLSearchParams({
+        course_id: courseId,
+        content_id: contentId
+      })}`;
+    } else {
+      return res.status(404).json({ error: "Route not found" });
     }
 
-    res.setHeader("Content-Type", ct);
-    return res.status(response.status).send(data);
+    const upstream = await fetch(target, {
+      method: "GET",
+      headers: HEADERS,
+      redirect: "follow"
+    });
+
+    const contentType = upstream.headers.get("content-type");
+    const data = Buffer.from(await upstream.arrayBuffer());
+
+    res.status(upstream.status);
+
+    if (contentType) {
+      res.setHeader("Content-Type", contentType);
+    }
+
+    res.setHeader("Cache-Control", "public, max-age=60, s-maxage=300");
+
+    return res.send(data);
+
   } catch (error) {
-    console.error("Scholarverse proxy:", error);
-    return fail(res, 502, "Upstream request failed");
+    return res.status(502).json({
+      error: "Upstream request failed",
+      message: error.message
+    });
   }
 }
