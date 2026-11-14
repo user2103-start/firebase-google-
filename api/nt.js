@@ -22,21 +22,28 @@ export default async function handler(req, res) {
   const sp = new URL(req.url, 'http://x').searchParams;
   const type = sp.get('type');
   const id = sp.get('vid');
+  const refOverride = sp.get('_ref');
   if (!ROUTES[type]) return res.status(400).json({ error: 'invalid type', types: Object.keys(ROUTES) });
 
   sp.delete('type');
   sp.delete('vid');
+  sp.delete('_ref');
   const qs = sp.toString();
   const url = ROUTES[type](id) + (qs ? '?' + qs : '');
 
+  let ref = type === 'live' ? 'https://selectionway.studybeepro.site/' : 'https://studybeepro.site/';
+  if (refOverride) ref = refOverride;
+
   try {
     const headers = {
-      Referer: 'https://studybeepro.site/',
-      Origin: 'https://studybeepro.site',
       'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0',
       Accept: '*/*',
       'Accept-Encoding': 'identity',
     };
+    if (ref !== 'none') {
+      headers.Referer = ref;
+      headers.Origin = new URL(ref).origin;
+    }
     if (req.headers.range) headers.Range = req.headers.range;
 
     const r = await fetch(url, {
