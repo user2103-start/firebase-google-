@@ -1,95 +1,42 @@
-
-const BASE = {
-  batches: "https://nt.studybeepro.site/batches.json",
-  worker: "https://fk.khatikgaurav38.workers.dev/api/nt",
-  media: "https://nt.studybeepro.site"
-};
-
-const HEADERS = {
-  Origin: "https://studybeepro.site",
-  Referer: "https://studybeepro.site/",
-  Accept: "*/*"
-};
-
 export default async function handler(req, res) {
-  if (req.method !== "GET" && req.method !== "HEAD") {
-    return res.status(405).json({ error: "Method not allowed" });
+  // Extract path or target query parameter sent to your proxy
+  const urlParam = req.query.path || "";
+  let destinationUrl = "";
+
+  // Route requests based on incoming paths or query parameters
+  if (req.url.includes("livex.php") || urlParam.includes("livex.php")) {
+    const id = req.query.id || "249";
+    destinationUrl = `https://selectionway.studybeepro.site/livex.php?id=${id}`;
+  } else if (req.url.includes("overview") || req.url.includes("content") || req.url.includes("fk.khatikgaurav38")) {
+    // Forward to the Cloudflare Worker API
+    const subPath = req.url.replace('/api/proxy', '');
+    destinationUrl = `https://fk.khatikgaurav38.workers.dev${subPath}`; } else { // Default fallback to Studybeepro base API const subPath = req.url.replace('/api/proxy', ''); destinationUrl = `https://nt.studybeepro.site${subPath}`;
   }
 
   try {
-    const { action, id, folder, course_id, content_id } = req.query;
-
-    let target;
-
-    switch (action) {
-      case "batches":
-        target = BASE.batches;
-        break;
-
-      case "overview":
-        target = `${BASE.worker}?overview=${encodeURIComponent(id || "176")}`;
-        break;
-
-      case "content":
-        target = `${BASE.worker}?content=${encodeURIComponent(id || "176")}&folder=${encodeURIComponent(folder || "0")}`;
-        break;
-
-      case "video":
-        if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) {
-          return res.status(400).json({ error: "Invalid video ID" });
-        }
-        target = `${BASE.media}/vc/${id}`;
-        break;
-
-      case "pdf":
-        if (!course_id || !content_id) {
-          return res.status(400).json({
-            error: "course_id and content_id required"
-          });
-        }
-
-        target = `${BASE.media}/vc/media?${new URLSearchParams({
-          course_id,
-          content_id
-        })}`;
-        break;
-
-      default:
-        return res.status(400).json({
-          error: "Invalid action",
-          available: ["batches", "overview", "content", "video", "pdf"]
-        });
-    }
-
-    const response = await fetch(target, {
+    const response = await fetch(destinationUrl, {
       method: req.method,
-      headers: HEADERS,
-      redirect: "follow"
+      headers: {
+        "User-Agent": req.headers["user-agent"] || "Mozilla/5.0",
+        "Referer": "https://studybeepro.site",
+        "Origin": "https://studybeepro.site",
+        "Accept": req.headers["accept"] || "*/*",
+      },
     });
 
-    res.status(response.status);
+    const data = await response.text();
 
-    for (const h of [
-      "content-type",
-      "content-length",
-      "content-disposition",
-      "accept-ranges",
-      "content-range"
-    ]) {
-      const value = response.headers.get(h);
-      if (value) res.setHeader(h, value);
+    // Set CORS headers so your client-side app can fetch this freely
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+    if (req.method === "OPTIONS") {
+      return res.status(200).end();
     }
 
-    res.setHeader("Cache-Control", "public, max-age=60, s-maxage=300");
-
-    if (req.method === "HEAD") return res.end();
-
-    return res.send(Buffer.from(await response.arrayBuffer()));
-
+    res.status(response.status).send(data);
   } catch (error) {
-    return res.status(502).json({
-      error: "NT proxy failed",
-      message: error.message
-    });
+    res.status(500).json({ error: "Proxy failed", details: error.message });
   }
 }
