@@ -1,78 +1,103 @@
-const UPSTREAMS = {
+const BASE = {
   batches: "https://nt.studybeepro.site/batches.json",
   worker: "https://fk.khatikgaurav38.workers.dev/api/nt",
   media: "https://nt.studybeepro.site"
 };
 
 const HEADERS = {
-  Origin: "https://studybeepro.site",
-  Referer: "https://studybeepro.site/",
-  Accept: "*/*"
+  "Origin": "https://studybeepro.site",
+  "Referer": "https://studybeepro.site/",
+  "Accept": "*/*"
 };
 
 export default async function handler(req, res) {
   try {
-    const path = (req.query.path || []).join("/");
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      return res.status(405).json({ error: "Method not allowed" });
+    }
+
+    const path = req.query.path;
+    const route = Array.isArray(path) ? path.join("/") : path || "";
+
     const params = new URLSearchParams(req.query);
+    params.delete("path");
 
     let target;
 
-    if (path === "batches") {
-      target = UPSTREAMS.batches;
-    } else if (path === "overview") {
-      target = `${UPSTREAMS.worker}?overview=${params.get("id") || "176"}`;
-    } else if (path === "content") {
-      const id = params.get("id") || "176";
-      const folder = params.get("folder") || "0";
-      target = `${UPSTREAMS.worker}?content=${id}&folder=${folder}`;
-    } else if (path.startsWith("video/")) {
-      const videoId = path.slice(6);
+    switch (route) {
+      case "batches":
+        target = BASE.batches;
+        break;
 
-      if (!/^[a-zA-Z0-9_-]+$/.test(videoId)) {
-        return res.status(400).json({ error: "Invalid video ID" });
+      case "overview":
+        target = `${BASE.worker}?overview=${encodeURIComponent(params.get("id") || "176")}`;
+        break;
+
+      case "content":
+        target = `${BASE.worker}?content=${encodeURIComponent(params.get("id") || "176")}&folder=${encodeURIComponent(params.get("folder") || "0")}`;
+        break;
+
+      case "video": {
+        const id = params.get("id");
+
+        if (!id || !/^[a-zA-Z0-9_-]+$/.test(id)) {
+          return res.status(400).json({ error: "Invalid video ID" });
+        }
+
+        target = `${BASE.media}/vc/${id}`;
+        break;
       }
 
-      target = `${UPSTREAMS.media}/vc/${videoId}`;
-    } else if (path === "pdf") {
-      const courseId = params.get("course_id");
-      const contentId = params.get("content_id");
+      case "pdf": {
+        const courseId = params.get("course_id");
+        const contentId = params.get("content_id");
 
-      if (!courseId || !contentId) {
-        return res.status(400).json({
-          error: "course_id and content_id required"
-        });
+        if (!courseId || !contentId) {
+          return res.status(400).json({
+            error: "course_id and content_id required"
+          });
+        }
+
+        target = `${BASE.media}/vc/media?${new URLSearchParams({
+          course_id: courseId,
+          content_id: contentId
+        })}`;
+        break;
       }
 
-      target = `${UPSTREAMS.media}/vc/media?${new URLSearchParams({
-        course_id: courseId,
-        content_id: contentId
-      })}`;
-    } else {
-      return res.status(404).json({ error: "Route not found" });
+      default:
+        return res.status(404).json({ error: "Invalid NT route" });
     }
 
-    const upstream = await fetch(target, {
-      method: "GET",
+    const response = await fetch(target, {
+      method: req.method,
       headers: HEADERS,
       redirect: "follow"
     });
 
-    const contentType = upstream.headers.get("content-type");
-    const data = Buffer.from(await upstream.arrayBuffer());
+    res.status(response.status);
 
-    res.status(upstream.status);
-
-    if (contentType) {
-      res.setHeader("Content-Type", contentType);
+    for (const header of [
+      "content-type",
+      "content-length",
+      "content-disposition",
+      "accept-ranges",
+      "content-range"
+    ]) {
+      const value = response.headers.get(header);
+      if (value) res.setHeader(header, value);
     }
 
     res.setHeader("Cache-Control", "public, max-age=60, s-maxage=300");
 
+    if (req.method === "HEAD") return res.end();
+
+    const data = Buffer.from(await response.arrayBuffer());
     return res.send(data);
 
   } catch (error) {
     return res.status(502).json({
-      error: "Upstream request failed",
+      error: "NT upstream error",
       message: error.message
     });
   }
