@@ -1,128 +1,91 @@
+// api/proxy.js : Vercel serverless proxy for missionjeet.site
+//
+// Usage (GET):
+//   /api/proxy?action=batches
+//   /api/proxy?action=overview&course_id=185
+//   /api/proxy?action=content&course_id=185&tab_id=226&folder_id=0&limit=100
+//   /api/proxy?action=media&content_id=18989&course_id=185      (video / pdf)
 
-const { Readable } = require("stream");
+const BASE = 'https://missionjeet.site';
+const TIMEOUT_MS = 15000;
 
-const BASE = "https://missionjeet.site";
+const num = (v, d) => (/^\d+$/.test(String(v ?? '')) ? String(v) : d);
+
+// Only these upstream URLs can ever be called (no open proxy)
+const ROUTES = {
+  batches: () => `${BASE}/batches.json`,
+  overview: (q) => {
+    const id = num(q.course_id);
+    return id && `${BASE}/api.php?action=overview&course_id=${id}`;
+  },
+  content: (q) => {
+    const c = num(q.course_id), t = num(q.tab_id);
+    if (!c || !t) return null;
+    const f = num(q.folder_id, '0');
+    const l = Math.min(Number(num(q.limit, '100')), 500);
+    return `${BASE}/api.php?action=content&course_id=${c}&tab_id=${t}&folder_id=${f}&limit=${l}`;
+  },
+  media: (q) => {
+    const c = num(q.course_id), i = num(q.content_id);
+    return c && i && `${BASE}/mj.php?content_id=${i}&course_id=${c}`;
+  },
+};
+// aliases so old/hyphenated names also work
+ROUTES.video = ROUTES.pdf = ROUTES.mj = ROUTES.media;
+ROUTES['get-content'] = ROUTES.content;
+ROUTES['get-overview'] = ROUTES.overview;
+
+const CACHE = { batches: 300, overview: 120, content: 60, media: 0 };
 
 module.exports = async (req, res) => {
-  // CORS
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method !== 'GET') return res.status(405).json({ error: 'GET only' });
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
-  if (req.method !== "GET") {
-    return res.status(405).json({
-      success: false,
-      message: "Method not allowed"
+  const q = req.query || {};
+  const action = String(q.action || '').toLowerCase();
+  const build = ROUTES[action];
+  if (!build) {
+    return res.status(400).json({
+      error: 'Unknown action',
+      actions: ['batches', 'overview', 'content', 'media'],
     });
   }
+  const url = build(q);
+  if (!url) {
+    return res.status(400).json({ error: 'Missing or invalid parameters for ' + action });
+  }
 
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    const {
-      action,
-      course_id,
-      tab_id,
-      folder_id = "0",
-      limit = "100",
-      content_id
-    } = req.query;
-
-    let url;
-
-    switch (action) {
-
-      // Batches
-      case "batches":
-        url = `${BASE}/batches.json`;
-        break;
-
-      // Course Overview
-      case "overview":
-        if (!course_id) {
-          return res.status(400).json({
-            success: false,
-            message: "course_id required"
-          });
-        }
-
-        url = `${BASE}/api.php?action=overview&course_id=${encodeURIComponent(course_id)}`;
-        break;
-
-      // Content by Tab ID
-      case "content":
-        if (!course_id || !tab_id) {
-          return res.status(400).json({
-            success: false,
-            message: "course_id and tab_id required"
-          });
-        }
-
-        url = `${BASE}/api.php?action=content&course_id=${encodeURIComponent(course_id)}&tab_id=${encodeURIComponent(tab_id)}&folder_id=${encodeURIComponent(folder_id)}&limit=${encodeURIComponent(limit)}`;
-        break;
-
-      // Video / PDF
-      case "media":
-        if (!course_id || !content_id) {
-          return res.status(400).json({
-            success: false,
-            message: "course_id and content_id required"
-          });
-        }
-
-        url = `${BASE}/mj.php?content_id=${encodeURIComponent(content_id)}&course_id=${encodeURIComponent(course_id)}`;
-        break;
-
-      default:
-        return res.status(400).json({
-          success: false,
-          message: "Invalid action",
-          available: ["batches", "overview", "content", "media"]
-        });
-    }
-
-    const response = await fetch(url, {
-      method: "GET",
+    const up = await fetch(url, {
+      signal: ctrl.signal,
       headers: {
-        "Accept": "*/*",
-        "User-Agent": "Mozilla/5.0"
+        'User-Agent':
+          'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36',
+        Accept: 'application/json, text/plain, */*',
+        Referer: BASE + '/',
       },
-      redirect: "follow"
     });
-
-    // Forward upstream status
-    res.status(response.status);
-
-    // Forward useful response headers
-    const contentType = response.headers.get("content-type");
-    const contentLength = response.headers.get("content-length");
-
-    if (contentType) {
-      res.setHeader("Content-Type", contentType);
-    }
-
-    if (contentLength) {
-      res.setHeader("Content-Length", contentLength);
-    }
-
-    res.setHeader("Cache-Control", "no-store");
-
-    // Stream response (JSON / PDF / other media)
-    if (response.body) {
-      return Readable.fromWeb(response.body).pipe(res);
-    }
-
-    return res.end();
-
-  } catch (error) {
-    console.error("Proxy Error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Proxy request failed",
-      error: error.message
+    const body = await up.text();
+    const ct = up.headers.get('content-type') || 'application/json; charset=utf-8';
+    const ttl = CACHE[ROUTES[action] === ROUTES.media ? 'media' : action] || 0;
+    res.setHeader('Content-Type', ct);
+    res.setHeader(
+      'Cache-Control',
+      ttl ? `public, s-maxage=${ttl}, stale-while-revalidate=${ttl * 2}` : 'no-store'
+    );
+    return res.status(up.status).send(body);
+  } catch (e) {
+    const timeout = e && e.name === 'AbortError';
+    return res.status(timeout ? 504 : 502).json({
+      error: timeout ? 'Upstream timeout' : 'Upstream fetch failed',
+      detail: String((e && e.message) || e),
     });
+  } finally {
+    clearTimeout(timer);
   }
 };
