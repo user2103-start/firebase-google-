@@ -8,8 +8,8 @@ const ROUTES = {
   batches: () => `${H}/batches.json`,
   overview: () => W,
   content: () => W,
-  video: (id) => `${H}/vc/${encodeURIComponent(id || '')}`,
-  pdf: () => `${H}/vc/media`,
+  video: () => `${H}/mj.php`,
+  pdf: () => `${H}/mj.php`,
   live: () => L,
 };
 
@@ -21,15 +21,13 @@ export default async function handler(req, res) {
 
   const sp = new URL(req.url, 'http://x').searchParams;
   const type = sp.get('type');
-  const id = sp.get('vid');
   const refOverride = sp.get('_ref');
   if (!ROUTES[type]) return res.status(400).json({ error: 'invalid type', types: Object.keys(ROUTES) });
 
   sp.delete('type');
-  sp.delete('vid');
   sp.delete('_ref');
   const qs = sp.toString();
-  const url = ROUTES[type](id) + (qs ? '?' + qs : '');
+  const url = ROUTES[type]() + (qs ? '?' + qs : '');
 
   let ref = type === 'live' ? 'none' : 'https://studybeepro.site/';
   if (refOverride) ref = refOverride;
