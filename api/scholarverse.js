@@ -1,186 +1,141 @@
+const BASE = "https://missionjeet.site";
 
-const UPSTREAM = (
-  process.env.UPSTREAM_URL || "https://thescholarverse.in"
-).replace(/\/+$/, "");
-
-const ORIGIN = (
-  process.env.UPSTREAM_ORIGIN || "https://thescholarverse.in"
-).replace(/\/+$/, "");
-
-const REFERER =
-  process.env.UPSTREAM_REFERER || `${ORIGIN}/`;
-
-const ROUTES = {
-  batches: "/api/mj/batches",
-  batch: "/api/mj/batches",
-  overview: "/api/mj/details",
-  content: "/api/mj/all-content",
-  "single-content": "/api/mj/details"
-};
-
-export default async function handler(req, res) {
+module.exports = async (req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type"
-  );
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
-    return res.status(204).end();
+    return res.status(200).end();
   }
 
-  if (req.method !== "GET") {
-    return res.status(405).json({
-      success: false,
-      error: "Only GET requests are allowed"
-    });
-  }
-
-  const route = req.query.route;
-  const endpoint = ROUTES[route];
-
-  if (!endpoint) {
-    return res.status(400).json({
-      success: false,
-      error: "Invalid route",
-      available_routes: Object.keys(ROUTES)
-    });
-  }
-
-  const p = req.query;
-  const params = new URLSearchParams();
-
-  let method = "GET";
-  let body;
-
-  // Batch list
-  if (route === "batches") {
-    // No parameters required
-  }
-
-  // Single batch
-  if (route === "batch") {
-    if (!p.id) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing id"
-      });
-    }
-
-    params.set("id", p.id);
-  }
-
-  // Course overview
-  if (route === "overview") {
-    if (!p.course_id) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing course_id"
-      });
-    }
-
-    params.set("course_id", p.course_id);
-    params.set("type", "overview");
-  }
-
-  // All folder content
-  if (route === "content") {
-    if (!p.course_id) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing course_id"
-      });
-    }
-
-    const limit = Number(p.limit || 100);
-
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      return res.status(400).json({
-        success: false,
-        error: "Limit must be between 1 and 100"
-      });
-    }
-
-    method = "POST";
-
-    body = {
-      course_id: p.course_id,
-      folder_id: p.folder_id || "0",
-      tab_id: p.tab_id || "226",
-      tab_type: p.tab_type || "content",
-      page: p.page || "1",
-      limit: String(limit),
-      keyword: p.keyword || "",
-      parent_course_id: p.parent_course_id || "0"
-    };
-  }
-
-  // Single video / PDF details
-  if (route === "single-content") {
-    if (!p.course_id || !p.content_id) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing course_id or content_id"
-      });
-    }
-
-    params.set("type", "single_content");
-    params.set("course_id", p.course_id);
-    params.set("folder_id", p.folder_id || "0");
-    params.set("content_id", p.content_id);
-  }
-
-  const url = UPSTREAM + endpoint +
-    (params.size ? "?" + params.toString() : "");
+  const {
+    action,
+    course_id,
+    tab_id,
+    folder_id = "0",
+    limit = "100",
+    content_id,
+    test_id,
+    attempt_mode = "practice"
+  } = req.query;
 
   try {
+    let url;
+    let method = "GET";
+    let body = undefined;
+
+    switch (action) {
+
+      // Batches
+      case "batches":
+        url = `${BASE}/batches.json`;
+        break;
+
+      // Course Overview
+      case "overview":
+        url = `${BASE}/api.php?action=overview&course_id=${encodeURIComponent(course_id)}`;
+        break;
+
+      // Course Content
+      case "content":
+        url = `${BASE}/api.php?action=content&course_id=${encodeURIComponent(course_id)}&tab_id=${encodeURIComponent(tab_id)}&folder_id=${encodeURIComponent(folder_id)}&limit=${encodeURIComponent(limit)}`;
+        break;
+
+      // Video / PDF
+      case "media":
+        url = `${BASE}/mj.php?content_id=${encodeURIComponent(content_id)}&course_id=${encodeURIComponent(course_id)}`;
+        break;
+
+      // Test Instructions
+      case "test_instructions":
+        url = `${BASE}/api.php?action=test_instructions&test_id=${encodeURIComponent(test_id)}&attempt_mode=${encodeURIComponent(attempt_mode)}`;
+        break;
+
+      // Test Questions / Data
+      case "test_data":
+        url = `${BASE}/api.php?action=test_data&test_id=${encodeURIComponent(test_id)}&attempt_mode=${encodeURIComponent(attempt_mode)}`;
+        break;
+
+      // Submit Test Answers
+      case "test_submit":
+        if (req.method !== "POST") {
+          return res.status(405).json({
+            success: false,
+            message: "Test submit requires POST"
+          });
+        }
+
+        url = `${BASE}/api.php?action=test_submit`;
+        method = "POST";
+
+        body = typeof req.body === "string"
+          ? req.body
+          : JSON.stringify(req.body || {});
+
+        break;
+
+      // Test Result
+      case "test_result":
+        url = `${BASE}/api.php?action=test_result&test_id=${encodeURIComponent(test_id)}`;
+        break;
+
+      default:
+        return res.status(400).json({
+          success: false,
+          message: "Invalid action",
+          available: [
+            "batches",
+            "overview",
+            "content",
+            "media",
+            "test_instructions",
+            "test_data",
+            "test_submit",
+            "test_result"
+          ]
+        });
+    }
+
+    const headers = {
+      "Accept": "*/*",
+      "User-Agent": "Mozilla/5.0"
+    };
+
+    if (method === "POST") {
+      headers["Content-Type"] = "application/json";
+    }
+
     const response = await fetch(url, {
       method,
-
-      headers: {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "User-Agent":
-          "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-
-        "Origin": ORIGIN,
-        "Referer": REFERER,
-
-        ...(method === "POST"
-          ? {
-              "Content-Type": "application/json"
-            }
-          : {})
-      },
-
-      ...(method === "POST"
-        ? { body: JSON.stringify(body) }
-        : {}),
-
-      signal: AbortSignal.timeout(20000)
+      headers,
+      body,
+      redirect: "follow"
     });
 
-    const data = await response.text();
+    res.status(response.status);
 
-    res.setHeader(
-      "Content-Type",
-      response.headers.get("content-type") ||
-      "application/json; charset=utf-8"
-    );
+    const contentType = response.headers.get("content-type");
+
+    if (contentType) {
+      res.setHeader("Content-Type", contentType);
+    }
 
     res.setHeader("Cache-Control", "no-store");
 
-    return res.status(response.status).send(data);
+    // Forward response as-is
+    const data = Buffer.from(await response.arrayBuffer());
+
+    return res.send(data);
 
   } catch (error) {
-    console.error("Scholarverse proxy:", error);
+    console.error("Proxy Error:", error);
 
-    return res.status(502).json({
+    return res.status(500).json({
       success: false,
-      error: "Upstream request failed"
+      message: "Proxy request failed",
+      error: error.message
     });
   }
-          }
-      
+};
