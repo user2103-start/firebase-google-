@@ -10,21 +10,21 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  const {
-    action,
-    course_id,
-    tab_id,
-    folder_id = "0",
-    limit = "100",
-    content_id,
-    test_id,
-    attempt_mode = "practice"
-  } = req.query;
+  const q = req.query || {};
+
+  const action = String(q.action || "");
+  const course_id = String(q.course_id || "");
+  const tab_id = String(q.tab_id || "");
+  const folder_id = String(q.folder_id ?? "0");
+  const limit = String(q.limit ?? "100");
+  const content_id = String(q.content_id || "");
+  const test_id = String(q.test_id || "");
+  const attempt_mode = String(q.attempt_mode || "practice").trim();
 
   try {
     let url;
     let method = "GET";
-    let body = undefined;
+    let body;
 
     switch (action) {
 
@@ -34,36 +34,120 @@ module.exports = async (req, res) => {
         break;
 
       // Course Overview
-      case "overview":
-        url = `${BASE}/api.php?action=overview&course_id=${encodeURIComponent(course_id)}`;
+      case "overview": {
+        if (!course_id) {
+          return res.status(400).json({
+            success: false,
+            message: "course_id required"
+          });
+        }
+
+        const params = new URLSearchParams({
+          action: "overview",
+          course_id
+        });
+
+        url = `${BASE}/api.php?${params}`;
         break;
+      }
 
       // Course Content
-      case "content":
-        url = `${BASE}/api.php?action=content&course_id=${encodeURIComponent(course_id)}&tab_id=${encodeURIComponent(tab_id)}&folder_id=${encodeURIComponent(folder_id)}&limit=${encodeURIComponent(limit)}`;
+      case "content": {
+        if (!course_id || !tab_id) {
+          return res.status(400).json({
+            success: false,
+            message: "course_id and tab_id required"
+          });
+        }
+
+        const params = new URLSearchParams({
+          action: "content",
+          course_id,
+          tab_id,
+          folder_id,
+          limit
+        });
+
+        url = `${BASE}/api.php?${params}`;
         break;
+      }
 
       // Video / PDF
-      case "media":
-        url = `${BASE}/mj.php?content_id=${encodeURIComponent(content_id)}&course_id=${encodeURIComponent(course_id)}`;
+      case "media": {
+        if (!course_id || !content_id) {
+          return res.status(400).json({
+            success: false,
+            message: "course_id and content_id required"
+          });
+        }
+
+        const params = new URLSearchParams({
+          content_id,
+          course_id
+        });
+
+        url = `${BASE}/mj.php?${params}`;
         break;
+      }
 
       // Test Instructions
-      case "test_instructions":
-        url = `${BASE}/api.php?action=test_instructions&test_id=${encodeURIComponent(test_id)}&attempt_mode=${encodeURIComponent(attempt_mode)}`;
+      case "test_instructions": {
+        if (!test_id) {
+          return res.status(400).json({
+            success: false,
+            message: "test_id required"
+          });
+        }
+
+        if (!["live", "practice"].includes(attempt_mode)) {
+          return res.status(400).json({
+            success: false,
+            message: "attempt_mode must be live or practice"
+          });
+        }
+
+        const params = new URLSearchParams({
+          action: "test_instructions",
+          test_id,
+          attempt_mode
+        });
+
+        url = `${BASE}/api.php?${params}`;
         break;
+      }
 
       // Test Questions / Data
-      case "test_data":
-        url = `${BASE}/api.php?action=test_data&test_id=${encodeURIComponent(test_id)}&attempt_mode=${encodeURIComponent(attempt_mode)}`;
-        break;
+      case "test_data": {
+        if (!test_id) {
+          return res.status(400).json({
+            success: false,
+            message: "test_id required"
+          });
+        }
 
-      // Submit Test Answers
-      case "test_submit":
+        if (!["live", "practice"].includes(attempt_mode)) {
+          return res.status(400).json({
+            success: false,
+            message: "attempt_mode must be live or practice"
+          });
+        }
+
+        const params = new URLSearchParams({
+          action: "test_data",
+          test_id,
+          attempt_mode
+        });
+
+        url = `${BASE}/api.php?${params}`;
+        break;
+      }
+
+      // Submit Test
+      case "test_submit": {
         if (req.method !== "POST") {
           return res.status(405).json({
             success: false,
-            message: "Test submit requires POST"
+            message: "Send POST request for test_submit"
           });
         }
 
@@ -75,11 +159,25 @@ module.exports = async (req, res) => {
           : JSON.stringify(req.body || {});
 
         break;
+      }
 
       // Test Result
-      case "test_result":
-        url = `${BASE}/api.php?action=test_result&test_id=${encodeURIComponent(test_id)}`;
+      case "test_result": {
+        if (!test_id) {
+          return res.status(400).json({
+            success: false,
+            message: "test_id required"
+          });
+        }
+
+        const params = new URLSearchParams({
+          action: "test_result",
+          test_id
+        });
+
+        url = `${BASE}/api.php?${params}`;
         break;
+      }
 
       default:
         return res.status(400).json({
@@ -98,6 +196,7 @@ module.exports = async (req, res) => {
         });
     }
 
+    // Upstream request
     const headers = {
       "Accept": "*/*",
       "User-Agent": "Mozilla/5.0"
@@ -114,6 +213,7 @@ module.exports = async (req, res) => {
       redirect: "follow"
     });
 
+    // Forward status and content type
     res.status(response.status);
 
     const contentType = response.headers.get("content-type");
@@ -124,7 +224,7 @@ module.exports = async (req, res) => {
 
     res.setHeader("Cache-Control", "no-store");
 
-    // Forward response as-is
+    // Forward response body
     const data = Buffer.from(await response.arrayBuffer());
 
     return res.send(data);
